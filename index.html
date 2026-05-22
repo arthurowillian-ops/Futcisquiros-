@@ -96,7 +96,7 @@
         #bubble-coach { top: 300px; left: 40px; }
         #bubble-players { top: 310px; right: 220px; }
 
-        /* --- NOVA TELA: OPÇÕES DE JOGO --- */
+        /* --- TELA: OPÇÕES DE JOGO --- */
         #game-options-screen {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0, 0, 0, 0.9); z-index: 150;
@@ -119,7 +119,7 @@
         }
         #game-title { font-size: 50px; color: #f1c40f; text-shadow: 3px 3px 0px #d35400, 6px 6px 20px rgba(0,0,0,0.6); margin-bottom: 20px; letter-spacing: 2px; }
         .selection-layout { display: flex; width: 95%; justify-content: space-between; }
-        .player-select-box { width: 46%; background: rgba(255,255,255,0.03); padding: 20px; border-radius: 16px; border: 2px solid rgba(255,255,255,0.1); }
+        .player-select-box { width: 46%; background: rgba(255,255,255,0.03); padding: 20px; border-radius: 16px; border: 2px solid rgba(255,255,255,0.1); transition: opacity 0.3s; }
         .player-select-box h2 { font-size: 20px; margin-top: 0; margin-bottom: 20px; text-align: center; padding: 6px; border-radius: 8px; }
         #p1-box h2 { color: #ff4757; background: rgba(255, 71, 87, 0.15); }
         #p2-box h2 { color: #3498db; background: rgba(52, 152, 219, 0.15); }
@@ -143,7 +143,7 @@
         #online-status-container { display: none; margin-top: 20px; flex-direction: column; align-items: center; }
         .spinner { width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-left-color: #f1c40f; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 10px; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        #online-msg { font-size: 18px; color: #f1c40f; text-transform: uppercase; }
+        #online-msg { font-size: 18px; color: #f1c40f; text-transform: uppercase; text-align: center; max-width: 600px; }
 
         /* --- 3) JOGO PRINCIPAL --- */
         #football-pitch { position: absolute; bottom: 0; width: 100%; height: 120px; background: linear-gradient(to bottom, #2ecc71, #27ae60); border-top: 5px solid #fff; }
@@ -206,7 +206,7 @@
             </div>
             
             <div id="online-status-container">
-                <div class="spinner"></div>
+                <div class="spinner" id="online-spinner"></div>
                 <div id="online-msg">Encontrando player...</div>
             </div>
 
@@ -235,7 +235,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue, update as dbUpdate } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        import { getDatabase, ref, set, onValue, update as dbUpdate, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyAvHUzX4_ZdUitEGlSFLamG0zyzuFtVe0I",
@@ -276,7 +276,7 @@
 
         let splashCleared = false;
         let isOnlineMode = false;
-        let onlineRole = null; // 'p1' ou 'p2'
+        let onlineRole = null; // Definido dinamicamente via Firebase Transaction ('p1' ou 'p2')
         let p1Index = 0, p2Index = 0;
         let p1Ready = false, p2Ready = false;
         let gameActive = false;
@@ -310,6 +310,12 @@
         // --- SELEÇÃO DE MODO DE JOGO ---
         document.getElementById('btn-local').addEventListener('click', () => {
             isOnlineMode = false;
+            onlineRole = null;
+            document.getElementById('p1-box').style.opacity = '1';
+            document.getElementById('p2-box').style.opacity = '1';
+            document.getElementById('guide-p1').style.display = 'block';
+            document.getElementById('guide-p2').style.display = 'block';
+            document.getElementById('online-status-container').style.display = 'none';
             setupCharacterGrids();
             fadeTo(() => {
                 document.getElementById('game-options-screen').style.display = 'none';
@@ -366,57 +372,48 @@
                 if (p1Ready && p2Ready) document.getElementById('play-button').style.display = 'inline-block';
             } else {
                 if(onlineRole === 'p1') {
-                    document.getElementById('p1-status').innerText = p1Ready ? "PRONTO!" : "Escolha com A / D e confirme com W";
+                    document.getElementById('p1-status').innerText = p1Ready ? "PRONTO! ESPERANDO RIVAL..." : "Escolha com A / D e confirme com W";
                     document.getElementById('p1-status').className = "ready-status" + (p1Ready ? " active" : "");
-                } else if(onlineRole === 'p2') {
-                    document.getElementById('p2-status').innerText = p2Ready ? "PRONTO!" : "Escolha com ← / → e confirme com ↑";
+                    document.getElementById('p2-status').innerText = p2Ready ? "RIVAL PRONTO!" : "RIVAL ESCOLHENDO...";
                     document.getElementById('p2-status').className = "ready-status" + (p2Ready ? " active" : "");
+                } else if(onlineRole === 'p2') {
+                    document.getElementById('p2-status').innerText = p2Ready ? "PRONTO! ESPERANDO INÍCIO..." : "Escolha com ← / → e confirme com ↑";
+                    document.getElementById('p2-status').className = "ready-status" + (p2Ready ? " active" : "");
+                    document.getElementById('p1-status').innerText = p1Ready ? "RIVAL PRONTO!" : "RIVAL ESCOLHENDO...";
+                    document.getElementById('p1-status').className = "ready-status" + (p1Ready ? " active" : "");
                 }
             }
         }
 
-        // --- SISTEMA NETWORK MULTIPLAYER (FIREBASE) ---
+        // --- SISTEMA DE RESERVA DE VAGAS ONLINE (TRANSACTION) ---
         function connectToFirebaseRoom() {
-            onValue(gameRoomRef, (snapshot) => {
-                const data = snapshot.val();
-                if (!data || data.status === 'idle') {
-                    // Primeiro jogador a se conectar assume a esquerda (P1)
-                    if (!onlineRole) {
-                        onlineRole = 'p1';
-                        set(gameRoomRef, {
-                            status: 'waiting', p1_connected: true, p2_connected: false,
-                            p1_idx: 0, p2_idx: 0, p1_ready: false, p2_ready: false,
-                            p1_inputs: { x: 0, jump: false, kick: false },
-                            p2_inputs: { x: 0, jump: false, kick: false },
-                            score_p1: 0, score_p2: 0, ball_sync: { x: 500, y: 150, vx: 0, vy: 0, angle: 0 }
-                        });
-                        configureOnlineUI();
-                    }
-                } else if (data.status === 'waiting' && !onlineRole) {
-                    // Segundo jogador a entrar assume a direita (P2)
+            // Usando transação para garantir que duas pessoas não peguem a mesma vaga ao mesmo tempo
+            runTransaction(gameRoomRef, (currentData) => {
+                if (currentData === null || currentData.status === 'idle') {
+                    onlineRole = 'p1';
+                    return {
+                        status: 'waiting', p1_connected: true, p2_connected: false,
+                        p1_idx: 0, p2_idx: 0, p1_ready: false, p2_ready: false,
+                        p1_inputs: { kick: false }, p2_inputs: { kick: false },
+                        score_p1: 0, score_p2: 0, ball_sync: { x: 500, y: 150, vx: 0, vy: 0, angle: 0 }
+                    };
+                } else if (currentData.status === 'waiting' && !currentData.p2_connected) {
                     onlineRole = 'p2';
-                    dbUpdate(gameRoomRef, { p2_connected: true });
-                    configureOnlineUI();
+                    currentData.p2_connected = true;
+                    return currentData;
                 }
-
-                // Monitoramento em tempo real do estado da sala na seleção
-                if (data && isOnlineMode && !gameActive) {
-                    p1Index = data.p1_idx;
-                    p2Index = data.p2_idx;
-                    p1Ready = data.p1_ready;
-                    p2Ready = data.p2_ready;
-                    updateSelectionVisuals();
-
-                    if(data.p1_ready && !data.p2_ready) {
-                        document.getElementById('online-msg').innerText = "Encontrando player...";
-                    }
-                    if(data.p1_ready && data.p2_ready && data.status !== 'playing') {
-                        document.getElementById('online-msg').innerText = "Foi encontrado um adversário!";
-                        dbUpdate(gameRoomRef, { status: 'playing' });
-                        setTimeout(() => { triggerStartGame(); }, 1500);
-                    }
+                // Sala lotada ou jogo já rodando
+                onlineRole = 'spectator';
+                return undefined; 
+            }).then((result) => {
+                if (onlineRole === 'spectator') {
+                    alert("A sala online está cheia no momento! Tente novamente em instantes.");
+                    window.location.reload();
+                    return;
                 }
-            }, { onlyOnce: false });
+                configureOnlineUI();
+                listenToRoomChanges();
+            });
         }
 
         function configureOnlineUI() {
@@ -425,16 +422,47 @@
             document.getElementById('online-status-container').style.display = 'flex';
             
             if (onlineRole === 'p1') {
-                document.getElementById('p2-box').style.opacity = '0.3';
+                document.getElementById('p1-box').style.opacity = '1';
+                document.getElementById('p2-box').style.opacity = '0.3'; // Bloqueia lado direito visualmente
                 document.getElementById('guide-p2').style.display = 'none';
-            } else {
-                document.getElementById('p1-box').style.opacity = '0.3';
+                document.getElementById('guide-p1').style.display = 'block';
+            } else if (onlineRole === 'p2') {
+                document.getElementById('p1-box').style.opacity = '0.3'; // Bloqueia lado esquerdo visualmente
+                document.getElementById('p2-box').style.opacity = '1';
                 document.getElementById('guide-p1').style.display = 'none';
+                document.getElementById('guide-p2').style.display = 'block';
             }
             updateSelectionVisuals();
         }
 
-        // --- SISTEMA DE CAPTURA DE ENTRADAS ---
+        function listenToRoomChanges() {
+            onValue(gameRoomRef, (snapshot) => {
+                const data = snapshot.val();
+                if (!data || !isOnlineMode || gameActive) return;
+
+                p1Index = data.p1_idx;
+                p2Index = data.p2_idx;
+                p1Ready = data.p1_ready;
+                p2Ready = data.p2_ready;
+                updateSelectionVisuals();
+
+                if (!data.p2_connected) {
+                    document.getElementById('online-msg').innerText = "Aguardando Oponente Conectar...";
+                } else if (!data.p1_ready || !data.p2_ready) {
+                    document.getElementById('online-msg').innerText = "Encontrando Player... Aguardando confirmação dos personagens.";
+                } else if (data.p1_ready && data.p2_ready && data.status !== 'playing') {
+                    document.getElementById('online-spinner').style.display = 'none';
+                    document.getElementById('online-msg').innerHTML = "<span style='color:#2ed573;'>FOI ENCONTRADO UM ADVERSÁRIO!</span><br>Iniciando partida...";
+                    
+                    if (onlineRole === 'p1') {
+                        dbUpdate(gameRoomRef, { status: 'playing' });
+                    }
+                    setTimeout(() => { triggerStartGame(); }, 2000);
+                }
+            });
+        }
+
+        // --- CAPTURA DE ENTRADAS EM MÁQUINAS SEPARADAS ---
         const keys = {};
         window.addEventListener('keydown', (e) => { 
             keys[e.code] = true; 
@@ -458,7 +486,7 @@
                 }
                 updateSelectionVisuals();
             } else {
-                // Modo Online de atualização via DB
+                // No modo Online, você só altera o seu respectivo lado!
                 if (onlineRole === 'p1' && !p1Ready) {
                     if (code === 'KeyA') { p1Index = (p1Index - 1 + leftTeam.length) % leftTeam.length; dbUpdate(gameRoomRef, { p1_idx: p1Index }); }
                     if (code === 'KeyD') { p1Index = (p1Index + 1) % leftTeam.length; dbUpdate(gameRoomRef, { p1_idx: p1Index }); }
@@ -514,38 +542,43 @@
         let p1KickTimer = 0, p2KickTimer = 0;
         let p1JumpTicks = 0, p2JumpTicks = 0;
 
-        // --- LISTENER DA PARTIDA EM ANDAMENTO (ONLINE) ---
+        // --- SINCRONIZAÇÃO EM TEMPO REAL DURANTE O JOGO ---
         function listenToOnlineMatch() {
             onValue(gameRoomRef, (snapshot) => {
                 const data = snapshot.val();
                 if(!data) return;
 
-                // Recebendo os placares online de forma centralizada
                 scoreP1 = data.score_p1;
                 scoreP2 = data.score_p2;
                 document.getElementById('score-p1').innerText = scoreP1;
                 document.getElementById('score-p2').innerText = scoreP2;
 
-                // O jogador secundário (P2) aceita a física simulada e sincronizada do host dono da sala (P1)
                 if (onlineRole === 'p2') {
+                    // P2 obedece a física da bola calculada pelo P1 (Host)
                     Body.setPosition(ball, { x: data.ball_sync.x, y: data.ball_sync.y });
                     Body.setVelocity(ball, { x: data.ball_sync.vx, y: data.ball_sync.vy });
                     Body.setAngle(ball, data.ball_sync.angle);
                     
-                    // Sincroniza posições do oponente
-                    Body.setPosition(p1, { x: data.p1_pos?.x || 200, y: data.p1_pos?.y || groundY - 34 });
+                    // Recebe posição do rival
+                    if(data.p1_pos) Body.setPosition(p1, { x: data.p1_pos.x, y: data.p1_pos.y });
                 } else if (onlineRole === 'p1') {
-                    // Sincroniza posições do oponente P2 capturadas na outra ponta
-                    Body.setPosition(p2, { x: data.p2_pos?.x || 800, y: data.p2_pos?.y || groundY - 34 });
+                    // P1 recebe posição do rival
+                    if(data.p2_pos) Body.setPosition(p2, { x: data.p2_pos.x, y: data.p2_pos.y });
                 }
 
-                // Trata animação remota de chutes
+                // Trata animação de chutes remotos
                 if(onlineRole === 'p2' && data.p1_inputs.kick && p1KickTimer === 0) p1KickTimer = 10;
                 if(onlineRole === 'p1' && data.p2_inputs.kick && p2KickTimer === 0) p2KickTimer = 10;
+                
+                // Monitora reinício global pós-gol detectado pelo Host
+                if(isResetting && data.ball_sync.x === width/2 && data.ball_sync.y === 150) {
+                    isResetting = false;
+                    document.getElementById('goal-banner').style.display = 'none';
+                }
             }, { onlyOnce: false });
         }
 
-        // --- LOOP PRINCIPAL DO JOGO (LOCAL + SYNC ONLINE) ---
+        // --- LOOP DE FÍSICA (LOCAL VS ONLINE) ---
         function update() {
             if (!gameActive) { requestAnimationFrame(update); return; }
 
@@ -555,8 +588,7 @@
             const maxJumpTicks = 14; 
 
             if (!isOnlineMode) {
-                // Simulação Física Padrão Local (Exatamente como funcionava)
-                // --- J1 LOCAL ---
+                // --- MOVIMENTAÇÃO LOCAL TRADICIONAL ---
                 let p1VelX = 0;
                 if (keys['KeyA']) p1VelX = -speed;
                 if (keys['KeyD']) p1VelX = speed;
@@ -565,8 +597,6 @@
                     if (p1OnGround && p1JumpTicks === 0) { Body.setVelocity(p1, { x: p1.velocity.x, y: initialJumpForce }); p1JumpTicks = 1; }
                     else if (p1JumpTicks > 0 && p1JumpTicks < maxJumpTicks) { Body.setVelocity(p1, { x: p1.velocity.x, y: p1.velocity.y + sustainedJumpForce }); p1JumpTicks++; }
                 } else { p1JumpTicks = 0; }
-                if (p1OnGround && !keys['KeyW']) p1JumpTicks = 0;
-                if (p1.velocity.y > 0.5) Body.setVelocity(p1, { x: p1.velocity.x, y: p1.velocity.y + 0.45 });
                 Body.setVelocity(p1, { x: p1VelX, y: p1.velocity.y });
 
                 if (keys['Space'] && p1KickTimer === 0) {
@@ -574,7 +604,6 @@
                     if (Vector.magnitude(Vector.sub(ball.position, p1.position)) < 100) Body.applyForce(ball, ball.position, { x: 0.016, y: -0.012 });
                 }
 
-                // --- J2 LOCAL ---
                 let p2VelX = 0;
                 if (keys['ArrowLeft']) p2VelX = -speed;
                 if (keys['ArrowRight']) p2VelX = speed;
@@ -583,8 +612,6 @@
                     if (p2OnGround && p2JumpTicks === 0) { Body.setVelocity(p2, { x: p2.velocity.x, y: initialJumpForce }); p2JumpTicks = 1; }
                     else if (p2JumpTicks > 0 && p2JumpTicks < maxJumpTicks) { Body.setVelocity(p2, { x: p2.velocity.x, y: p2.velocity.y + sustainedJumpForce }); p2JumpTicks++; }
                 } else { p2JumpTicks = 0; }
-                if (p2OnGround && !keys['ArrowUp']) p2JumpTicks = 0;
-                if (p2.velocity.y > 0.5) Body.setVelocity(p2, { x: p2.velocity.x, y: p2.velocity.y + 0.45 });
                 Body.setVelocity(p2, { x: p2VelX, y: p2.velocity.y });
 
                 if ((keys['KeyP'] || keys['Enter']) && p2KickTimer === 0) {
@@ -592,16 +619,14 @@
                     if (Vector.magnitude(Vector.sub(ball.position, p2.position)) < 100) Body.applyForce(ball, ball.position, { x: -0.016, y: -0.012 });
                 }
 
-                // Avalia Gol no Local
                 if (!isResetting) {
                     if (ball.position.x > width - 75 && ball.position.y > 310 && ball.position.y < groundY) { scoreP1++; triggerGoal("GOL DO JOGADOR 1!"); }
                     if (ball.position.x < 75 && ball.position.y > 310 && ball.position.y < groundY) { scoreP2++; triggerGoal("GOL DO JOGADOR 2!"); }
                 }
 
             } else {
-                // --- ARQUITETURA MULTIPLAYER ONLINE ---
+                // --- ARQUITETURA MULTIPLAYER ONLINE SEPARADA ---
                 if (onlineRole === 'p1') {
-                    // PROCESSA J1 LOCAL NO SEU COMPUTADOR
                     let p1VelX = 0;
                     if (keys['KeyA']) p1VelX = -speed;
                     if (keys['KeyD']) p1VelX = speed;
@@ -610,7 +635,6 @@
                         if (p1OnGround && p1JumpTicks === 0) { Body.setVelocity(p1, { x: p1.velocity.x, y: initialJumpForce }); p1JumpTicks = 1; }
                         else if (p1JumpTicks > 0 && p1JumpTicks < maxJumpTicks) { Body.setVelocity(p1, { x: p1.velocity.x, y: p1.velocity.y + sustainedJumpForce }); p1JumpTicks++; }
                     } else { p1JumpTicks = 0; }
-                    if (p1.velocity.y > 0.5) Body.setVelocity(p1, { x: p1.velocity.x, y: p1.velocity.y + 0.45 });
                     Body.setVelocity(p1, { x: p1VelX, y: p1.velocity.y });
 
                     let isKicking = false;
@@ -619,26 +643,25 @@
                         if (Vector.magnitude(Vector.sub(ball.position, p1.position)) < 100) Body.applyForce(ball, ball.position, { x: 0.016, y: -0.012 });
                     }
 
-                    // Envia os pacotes de física do P1 + Bola para o Firebase
+                    // Envia dados do P1 e da Bola para o banco
                     dbUpdate(gameRoomRef, {
                         p1_pos: { x: p1.position.x, y: p1.position.y },
                         p1_inputs: { kick: isKicking },
                         ball_sync: { x: ball.position.x, y: ball.position.y, vx: ball.velocity.x, vy: ball.velocity.y, angle: ball.angle }
                     });
 
-                    // Apenas o Player 1 (Host) calcula gol nas redes locais e sincroniza o placar global
+                    // Apenas o P1 (Dono da sala) valida o Gol para evitar bugs de rede dupla
                     if (!isResetting) {
                         if (ball.position.x > width - 75 && ball.position.y > 310 && ball.position.y < groundY) {
-                            let nextScore = scoreP1 + 1; dbUpdate(gameRoomRef, { score_p1: nextScore }); triggerGoal("GOL DO JOGADOR 1!");
+                            dbUpdate(gameRoomRef, { score_p1: scoreP1 + 1 }); triggerGoal("GOL DO JOGADOR 1!");
                         }
                         if (ball.position.x < 75 && ball.position.y > 310 && ball.position.y < groundY) {
-                            let nextScore = scoreP2 + 1; dbUpdate(gameRoomRef, { score_p2: nextScore }); triggerGoal("GOL DO JOGADOR 2!");
+                            dbUpdate(gameRoomRef, { score_p2: scoreP2 + 1 }); triggerGoal("GOL DO JOGADOR 2!");
                         }
                     }
                 }
 
                 if (onlineRole === 'p2') {
-                    // PROCESSA J2 LOCAL NO SEU COMPUTADOR
                     let p2VelX = 0;
                     if (keys['ArrowLeft']) p2VelX = -speed;
                     if (keys['ArrowRight']) p2VelX = speed;
@@ -647,17 +670,15 @@
                         if (p2OnGround && p2JumpTicks === 0) { Body.setVelocity(p2, { x: p2.velocity.x, y: initialJumpForce }); p2JumpTicks = 1; }
                         else if (p2JumpTicks > 0 && p2JumpTicks < maxJumpTicks) { Body.setVelocity(p2, { x: p2.velocity.x, y: p2.velocity.y + sustainedJumpForce }); p2JumpTicks++; }
                     } else { p2JumpTicks = 0; }
-                    if (p2.velocity.y > 0.5) Body.setVelocity(p2, { x: p2.velocity.x, y: p2.velocity.y + 0.45 });
                     Body.setVelocity(p2, { x: p2VelX, y: p2.velocity.y });
 
                     let isKicking = false;
                     if ((keys['KeyP'] || keys['Enter']) && p2KickTimer === 0) {
                         p2KickTimer = 10; isKicking = true;
-                        // O cliente dá forças predictivas na bola
                         if (Vector.magnitude(Vector.sub(ball.position, p2.position)) < 100) Body.applyForce(ball, ball.position, { x: -0.016, y: -0.012 });
                     }
 
-                    // Envia posição do P2
+                    // Envia apenas a posição do P2
                     dbUpdate(gameRoomRef, {
                         p2_pos: { x: p2.position.x, y: p2.position.y },
                         p2_inputs: { kick: isKicking }
@@ -665,7 +686,7 @@
                 }
             }
 
-            // --- REDERIZAÇÃO E ATUALIZAÇÃO DE SPRITES ---
+            // --- REDERIZAÇÃO GRÁFICA ---
             const p1Visual = document.getElementById('p1-visual');
             let p1Rot = 0; if (p1KickTimer > 0) { p1Rot = (p1KickTimer / 10) * 0.3; p1KickTimer--; }
             p1Visual.style.left = `${p1.position.x - 37.5}px`; p1Visual.style.top = `${p1.position.y - 51}px`;
@@ -680,18 +701,14 @@
             ballVisual.style.left = `${ball.position.x - 20}px`; ballVisual.style.top = `${ball.position.y - 20}px`;
             ballVisual.style.transform = `rotate(${ball.angle}rad)`;
 
-            document.getElementById('score-p1').innerText = scoreP1;
-            document.getElementById('score-p2').innerText = scoreP2;
-
             requestAnimationFrame(update);
         }
 
-        // --- SISTEMA DE GOLS E REGRA DE 5 GOLS (VITÓRIA) ---
+        // --- CONTROLE DE PLACAR, BANNER DE GOL E RESET ---
         function triggerGoal(msgText) {
             isResetting = true;
             const banner = document.getElementById('goal-banner');
             
-            // Verificação da Regra de Vitória (Chegar a 5 Gols)
             if (scoreP1 >= 5 || scoreP2 >= 5) {
                 let winnerName = scoreP1 >= 5 ? "JOGADOR 1" : "JOGADOR 2";
                 banner.innerHTML = `FIM DE JOGO!<br><span style="color:#fff; font-size:35px;">${winnerName} VENCEU A PARTIDA!</span>`;
@@ -701,19 +718,27 @@
                     banner.style.display = 'none';
                     scoreP1 = 0; scoreP2 = 0;
                     if(isOnlineMode && onlineRole === 'p1') {
-                        dbUpdate(gameRoomRef, { score_p1: 0, score_p2: 0 });
+                        dbUpdate(gameRoomRef, { score_p1: 0, score_p2: 0, status: 'waiting', p1_ready: false, p2_ready: false });
+                        window.location.reload(); // Reinicia o lobby online com segurança
+                    } else if (!isOnlineMode) {
+                        resetPositions();
+                        isResetting = false;
                     }
-                    resetPositions();
-                    isResetting = false;
                 }, 4000);
             } else {
-                // Gol normal
                 banner.innerHTML = msgText;
                 banner.style.display = 'block';
                 setTimeout(() => {
-                    banner.style.display = 'none';
-                    resetPositions();
-                    isResetting = false;
+                    if(!isOnlineMode) {
+                        banner.style.display = 'none';
+                        resetPositions();
+                        isResetting = false;
+                    } else if (isOnlineMode && onlineRole === 'p1') {
+                        resetPositions();
+                        dbUpdate(gameRoomRef, {
+                            ball_sync: { x: width / 2, y: 150, vx: 0, vy: 0, angle: 0 }
+                        });
+                    }
                 }, 2000);
             }
         }
